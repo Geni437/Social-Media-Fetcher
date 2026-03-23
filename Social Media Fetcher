@@ -1,0 +1,336 @@
+"""
+Social Media Analytics Fetcher
+================================
+Fetches followers, engagements, mentions, and sentiment perception
+from Facebook, Instagram, Twitter/X, YouTube, and LinkedIn.
+
+Output matches the structure of SocialMedia.csv:
+  Platform, Year, Number of Followers, Number of Engagements,
+  Number of Mentions, Perception
+
+REQUIREMENTS:
+  pip install requests tweepy google-api-python-client textblob
+"""
+
+import csv
+import requests
+from datetime import datetime
+
+try:
+    import tweepy
+except ImportError:
+    tweepy = None
+
+try:
+    from googleapiclient.discovery import build as yt_build
+except ImportError:
+    yt_build = None
+
+try:
+    from textblob import TextBlob
+except ImportError:
+    TextBlob = None
+
+
+# ─────────────────────────────────────────────
+# CREDENTIALS — fill these in before running
+# ─────────────────────────────────────────────
+
+# Facebook / Instagram (Meta Graph API)
+FB_ACCESS_TOKEN = "your_long_lived_page_access_token_here"
+FB_PAGE_ID      = "your_facebook_page_id_here"
+IG_USER_ID      = "your_instagram_business_account_id_here"
+
+# Twitter / X (API v2)
+TW_BEARER_TOKEN = "your_twitter_bearer_token_here"
+TW_USERNAME     = "YourHandleWithoutAt"
+
+# YouTube (Data API v3)
+YT_API_KEY      = "your_youtube_data_api_key_here"
+YT_CHANNEL_ID   = "UCxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# LinkedIn (Marketing API)
+LI_ACCESS_TOKEN = "your_linkedin_access_token_here"
+LI_ORG_ID       = "your_organization_id_number_here"
+
+# ─────────────────────────────────────────────
+
+YEAR        = datetime.now().year
+OUTPUT_FILE = f"SocialMedia_{YEAR}.csv"
+FIELDNAMES  = ["Platform", "Year", "Number of Followers",
+               "Number of Engagements", "Number of Mentions", "Perception"]
+
+
+# ─────────────────────────────────────────────
+# SENTIMENT HELPER
+# ─────────────────────────────────────────────
+def get_perception(texts: list) -> str:
+    if not TextBlob or not texts:
+        return "Neutral"
+    scores = [TextBlob(t).sentiment.polarity for t in texts if t]
+    if not scores:
+        return "Neutral"
+    avg = sum(scores) / len(scores)
+    if avg > 0.1:
+        return "Positive"
+    elif avg < -0.1:
+        return "Negative"
+    else:
+        return "Neutral"
+
+
+# ─────────────────────────────────────────────
+# FACEBOOK
+# ─────────────────────────────────────────────
+def fetch_facebook() -> dict:
+    print("[Facebook] Fetching...")
+    base = "https://graph.facebook.com/v19.0"
+
+    r = requests.get(f"{base}/{FB_PAGE_ID}", params={
+        "fields": "followers_count",
+        "access_token": FB_ACCESS_TOKEN
+    })
+    r.raise_for_status()
+    followers = r.json().get("followers_count", 0)
+
+    r2 = requests.get(f"{base}/{FB_PAGE_ID}/insights", params={
+        "metric": "page_post_engagements,page_mentions",
+        "period": "month",
+        "access_token": FB_ACCESS_TOKEN
+    })
+    r2.raise_for_status()
+    engagements = mentions = 0
+    for item in r2.json().get("data", []):
+        val = (item.get("values", [{}])[-1]).get("value", 0)
+        if item.get("name") == "page_post_engagements":
+            engagements = val
+        elif item.get("name") == "page_mentions":
+            mentions = val
+
+    r3 = requests.get(f"{base}/{FB_PAGE_ID}/posts", params={
+        "fields": "message", "limit": 25,
+        "access_token": FB_ACCESS_TOKEN
+    })
+    r3.raise_for_status()
+    posts = [p.get("message", "") for p in r3.json().get("data", [])]
+
+    return {
+        "Platform": "Facebook", "Year": YEAR,
+        "Number of Followers": followers,
+        "Number of Engagements": engagements,
+        "Number of Mentions": mentions,
+        "Perception": get_perception(posts)
+    }
+
+
+# ─────────────────────────────────────────────
+# INSTAGRAM
+# ─────────────────────────────────────────────
+def fetch_instagram() -> dict:
+    print("[Instagram] Fetching...")
+    base = "https://graph.facebook.com/v19.0"
+
+    r = requests.get(f"{base}/{IG_USER_ID}", params={
+        "fields": "followers_count",
+        "access_token": FB_ACCESS_TOKEN
+    })
+    r.raise_for_status()
+    followers = r.json().get("followers_count", 0)
+
+    r2 = requests.get(f"{base}/{IG_USER_ID}/media", params={
+        "fields": "like_count,comments_count,caption",
+        "limit": 25,
+        "access_token": FB_ACCESS_TOKEN
+    })
+    r2.raise_for_status()
+    media_items = r2.json().get("data", [])
+    engagements = sum(
+        m.get("like_count", 0) + m.get("comments_count", 0)
+        for m in media_items
+    )
+    captions = [m.get("caption", "") for m in media_items]
+
+    return {
+        "Platform": "Instagram", "Year": YEAR,
+        "Number of Followers": followers,
+        "Number of Engagements": engagements,
+        "Number of Mentions": 0,
+        "Perception": get_perception(captions)
+    }
+
+
+# ─────────────────────────────────────────────
+# TWITTER / X
+# ─────────────────────────────────────────────
+def fetch_twitter() -> dict:
+    print("[Twitter/X] Fetching...")
+    if not tweepy:
+        raise ImportError("tweepy not installed. Run: pip install tweepy")
+
+    client    = tweepy.Client(bearer_token=TW_BEARER_TOKEN)
+    user      = client.get_user(username=TW_USERNAME, user_fields=["public_metrics"])
+    metrics   = user.data.public_metrics
+    followers = metrics.get("followers_count", 0)
+
+    tweets = client.get_users_tweets(
+        id=user.data.id, max_results=100,
+        tweet_fields=["public_metrics", "text"]
+    )
+    engagements = 0
+    texts = []
+    for tweet in (tweets.data or []):
+        m = tweet.public_metrics
+        engagements += (
+            m.get("like_count", 0) + m.get("retweet_count", 0) +
+            m.get("reply_count", 0) + m.get("quote_count", 0)
+        )
+        texts.append(tweet.text)
+
+    mentions_resp = client.get_users_mentions(id=user.data.id, max_results=100)
+    mention_count = len(mentions_resp.data) if mentions_resp.data else 0
+    mention_texts = [t.text for t in (mentions_resp.data or [])]
+
+    return {
+        "Platform": "Twitter", "Year": YEAR,
+        "Number of Followers": followers,
+        "Number of Engagements": engagements,
+        "Number of Mentions": mention_count,
+        "Perception": get_perception(texts + mention_texts)
+    }
+
+
+# ─────────────────────────────────────────────
+# YOUTUBE
+# ─────────────────────────────────────────────
+def fetch_youtube() -> dict:
+    print("[YouTube] Fetching...")
+    if not yt_build:
+        raise ImportError("google-api-python-client not installed.")
+
+    youtube = yt_build("youtube", "v3", developerKey=YT_API_KEY)
+
+    resp      = youtube.channels().list(part="statistics", id=YT_CHANNEL_ID).execute()
+    stats     = resp["items"][0]["statistics"]
+    followers = int(stats.get("subscriberCount", 0))
+    views     = int(stats.get("viewCount", 0))
+
+    videos_resp = youtube.search().list(
+        part="id", channelId=YT_CHANNEL_ID,
+        maxResults=5, order="date", type="video"
+    ).execute()
+
+    comments = []
+    for item in videos_resp.get("items", []):
+        try:
+            c_resp = youtube.commentThreads().list(
+                part="snippet", videoId=item["id"]["videoId"], maxResults=20
+            ).execute()
+            for c in c_resp.get("items", []):
+                comments.append(
+                    c["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
+                )
+        except Exception:
+            pass
+
+    return {
+        "Platform": "YouTube", "Year": YEAR,
+        "Number of Followers": followers,
+        "Number of Engagements": views,
+        "Number of Mentions": 0,
+        "Perception": get_perception(comments)
+    }
+
+
+# ─────────────────────────────────────────────
+# LINKEDIN
+# ─────────────────────────────────────────────
+def fetch_linkedin() -> dict:
+    print("[LinkedIn] Fetching...")
+    headers = {
+        "Authorization": f"Bearer {LI_ACCESS_TOKEN}",
+        "X-Restli-Protocol-Version": "2.0.0"
+    }
+    org_urn = f"urn:li:organization:{LI_ORG_ID}"
+
+    r = requests.get(
+        "https://api.linkedin.com/v2/networkSizes",
+        params={"edgeType": "CompanyFollowedByMember",
+                "q": "followedEntity", "followedEntity": org_urn},
+        headers=headers
+    )
+    r.raise_for_status()
+    followers = r.json().get("firstDegreeSize", 0)
+
+    r2 = requests.get(
+        "https://api.linkedin.com/v2/organizationalEntityShareStatistics",
+        params={"q": "organizationalEntity", "organizationalEntity": org_urn},
+        headers=headers
+    )
+    r2.raise_for_status()
+    share_stat  = r2.json().get("elements", [{}])[0].get("totalShareStatistics", {})
+    engagements = (
+        share_stat.get("likeCount", 0)  + share_stat.get("commentCount", 0) +
+        share_stat.get("shareCount", 0) + share_stat.get("clickCount", 0)
+    )
+
+    r3 = requests.get(
+        "https://api.linkedin.com/v2/ugcPosts",
+        params={"q": "authors", "authors": f"List({org_urn})", "count": 20},
+        headers=headers
+    )
+    r3.raise_for_status()
+    texts = []
+    for post in r3.json().get("elements", []):
+        text = (post.get("specificContent", {})
+                    .get("com.linkedin.ugc.ShareContent", {})
+                    .get("shareCommentary", {})
+                    .get("text", ""))
+        if text:
+            texts.append(text)
+
+    return {
+        "Platform": "LinkedIn", "Year": YEAR,
+        "Number of Followers": followers,
+        "Number of Engagements": engagements,
+        "Number of Mentions": 0,
+        "Perception": get_perception(texts)
+    }
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+FETCHERS = {
+    "Facebook":  fetch_facebook,
+    "Instagram": fetch_instagram,
+    "Twitter":   fetch_twitter,
+    "YouTube":   fetch_youtube,
+    "LinkedIn":  fetch_linkedin,
+}
+
+def main():
+    results = []
+    for platform, fn in FETCHERS.items():
+        try:
+            row = fn()
+            results.append(row)
+            print(f"  ✓ {platform}: {row}")
+        except Exception as e:
+            print(f"  ✗ {platform} FAILED: {e}")
+            results.append({
+                "Platform": platform, "Year": YEAR,
+                "Number of Followers": "ERROR",
+                "Number of Engagements": "ERROR",
+                "Number of Mentions": "ERROR",
+                "Perception": "ERROR"
+            })
+
+    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\n✅ Done. Data saved to: {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    main()
