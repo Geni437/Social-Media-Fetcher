@@ -25,11 +25,18 @@ Requirements:
 """
 
 import csv
+import os
 import time
 import html
 import re
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed; falls back to environment variables
 
 import requests
 
@@ -54,10 +61,10 @@ except ImportError:
 # ──────────────────────────────────────────────────────────────────────────────
 
 # NewsAPI — get a free key at https://newsapi.org/register
-NEWSAPI_KEY = "your_newsapi_key_here"
+NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 
 # Twitter/X Bearer Token — developer.twitter.com (free tier)
-TW_BEARER_TOKEN = "your_twitter_bearer_token_here"
+TW_BEARER_TOKEN = os.getenv("TW_BEARER_TOKEN", "")
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -238,7 +245,7 @@ def search_bing_news() -> list:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def search_newsapi() -> list:
-    if NEWSAPI_KEY == "your_newsapi_key_here":
+    if not NEWSAPI_KEY:
         print("  [NewsAPI] No key set — skipping. Get a free key at newsapi.org")
         return []
 
@@ -317,7 +324,7 @@ def search_reddit() -> list:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def search_twitter() -> list:
-    if TW_BEARER_TOKEN == "your_twitter_bearer_token_here":
+    if not TW_BEARER_TOKEN:
         print("  [Twitter/X] No Bearer Token set — skipping.")
         return []
     if not tweepy:

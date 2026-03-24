@@ -1,0 +1,10 @@
+# Credentials — never commit
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Output CSVs (optional — remove these lines if you want to track them)
+# *.csv
