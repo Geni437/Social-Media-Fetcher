@@ -1,0 +1,414 @@
+"""
+GIPF Social Media Audience Analysis
+=====================================
+Public audience analysis — no platform admin access required.
+Targets @gipfnamibia by default; change the account variables to analyse any account.
+
+Automated (no credentials needed beyond free developer keys):
+    Twitter/X  — Bearer Token from developer.twitter.com (free tier, not admin)
+    YouTube    — API Key from console.cloud.google.com   (free tier, not admin)
+
+Manual input prompted at runtime:
+    Facebook, Instagram, LinkedIn
+    (visit the public page, enter the visible numbers when prompted)
+
+Output columns:
+    Platform | Year | Followers | Following | EngagementRate% |
+    AvgEngagementPerPost | PostsPerMonth | FollowerGrade |
+    AudienceQualityScore | Sentiment | TopPost
+
+Engagement Grade benchmarks:
+    A+  >= 6%  |  A >= 3%  |  B >= 1%  |  C >= 0.5%  |  D < 0.5%
+
+Audience Quality Score (0-100):
+    60% weight: engagement rate  (high ER = real, active audience)
+    40% weight: follower/following ratio  (high ratio = organic growth)
+
+Requirements:
+    pip install requests tweepy google-api-python-client textblob
+"""
+
+import csv
+from datetime import datetime
+
+try:
+    import tweepy
+except ImportError:
+    tweepy = None
+
+try:
+    from googleapiclient.discovery import build as yt_build
+except ImportError:
+    yt_build = None
+
+try:
+    from textblob import TextBlob
+except ImportError:
+    TextBlob = None
+
+
+# ──────────────────────────────────────────────────────────────
+# TARGET ACCOUNT — change these to analyse any organisation
+# ──────────────────────────────────────────────────────────────
+TW_USERNAME   = "gipfnamibia"   # Twitter/X handle without @
+YT_CHANNEL_ID = ""              # YouTube channel ID (UCxxxxxxx) — leave blank if none
+
+# ──────────────────────────────────────────────────────────────
+# CREDENTIALS (free developer keys — NOT the account owner)
+# ──────────────────────────────────────────────────────────────
+TW_BEARER_TOKEN = "your_twitter_bearer_token_here"
+YT_API_KEY      = "your_youtube_api_key_here"
+
+# ──────────────────────────────────────────────────────────────
+
+YEAR        = datetime.now().year
+OUTPUT_FILE = f"GIPF_Audience_Analysis_{YEAR}.csv"
+FIELDNAMES  = [
+    "Platform", "Year", "Followers", "Following",
+    "EngagementRate%", "AvgEngagementPerPost", "PostsPerMonth",
+    "FollowerGrade", "AudienceQualityScore", "Sentiment", "TopPost",
+]
+
+
+# ──────────────────────────────────────────────────────────────
+# HELPERS
+# ──────────────────────────────────────────────────────────────
+
+def get_sentiment(texts: list) -> str:
+    """Classify overall sentiment of a list of text strings."""
+    if not TextBlob or not texts:
+        return "Neutral"
+    scores = [TextBlob(t).sentiment.polarity for t in texts if t]
+    if not scores:
+        return "Neutral"
+    avg = sum(scores) / len(scores)
+    return "Positive" if avg > 0.1 else "Negative" if avg < -0.1 else "Neutral"
+
+
+def engagement_grade(rate: float) -> str:
+    """Industry-standard engagement rate grading."""
+    if rate >= 6.0: return "A+"
+    if rate >= 3.0: return "A"
+    if rate >= 1.0: return "B"
+    if rate >= 0.5: return "C"
+    return "D"
+
+
+def audience_quality_score(followers: int, following: int, er: float) -> int:
+    """
+    Score 0-100 estimating how real and engaged the audience is.
+      60 pts: engagement rate  — benchmarked at 5% = full 60 pts
+      40 pts: follower/following ratio — 10:1 = full 40 pts
+    """
+    er_score    = min(er / 5.0, 1.0) * 60
+    if following > 0:
+        ratio_score = min((followers / following) / 10.0, 1.0) * 40
+    else:
+        ratio_score = 40  # no following = fully organic / broadcast account
+    return round(er_score + ratio_score)
+
+
+def posts_per_month(timestamps: list) -> float:
+    """Estimate average posts per month from a list of datetime objects."""
+    if len(timestamps) < 2:
+        return float(len(timestamps))
+    timestamps = sorted(timestamps)
+    span_days  = max((timestamps[-1] - timestamps[0]).days, 1)
+    return round(len(timestamps) / span_days * 30, 1)
+
+
+def prompt(platform: str, field: str) -> int:
+    """Prompt for a manually observed number; returns 0 on empty/invalid input."""
+    try:
+        raw = input(f"  [{platform}] {field} (Enter to skip): ").strip()
+        return int(raw) if raw else 0
+    except (ValueError, KeyboardInterrupt):
+        return 0
+
+
+def error_row(platform: str) -> dict:
+    return {k: "ERROR" for k in FIELDNAMES} | {"Platform": platform, "Year": YEAR}
+
+
+# ──────────────────────────────────────────────────────────────
+# TWITTER / X
+# ──────────────────────────────────────────────────────────────
+
+def analyse_twitter() -> dict:
+    print("\n[Twitter/X] Fetching public profile and recent tweets...")
+
+    if not tweepy:
+        raise ImportError("tweepy not installed — run: pip install tweepy")
+
+    client = tweepy.Client(bearer_token=TW_BEARER_TOKEN, wait_on_rate_limit=True)
+
+    user_resp = client.get_user(
+        username=TW_USERNAME,
+        user_fields=["public_metrics", "created_at", "description", "location"]
+    )
+    if not user_resp.data:
+        raise ValueError(f"Account @{TW_USERNAME} not found on Twitter/X.")
+
+    pub       = user_resp.data.public_metrics
+    followers = pub.get("followers_count", 0)
+    following = pub.get("following_count", 0)
+
+    tweets_resp = client.get_users_tweets(
+        id=user_resp.data.id,
+        max_results=100,
+        tweet_fields=["public_metrics", "text", "created_at"],
+    )
+    tweets = tweets_resp.data or []
+
+    engagements = []
+    texts       = []
+    timestamps  = []
+    top_tweet   = ""
+    top_eng     = 0
+
+    for t in tweets:
+        m   = t.public_metrics
+        eng = (m.get("like_count", 0) + m.get("retweet_count", 0) +
+               m.get("reply_count", 0) + m.get("quote_count", 0))
+        engagements.append(eng)
+        texts.append(t.text)
+        if t.created_at:
+            timestamps.append(t.created_at)
+        if eng > top_eng:
+            top_eng   = eng
+            top_tweet = t.text[:120].replace("\n", " ")
+
+    avg_eng = round(sum(engagements) / len(engagements), 1) if engagements else 0
+    er_pct  = round(avg_eng / followers * 100, 2) if followers else 0.0
+    ppm     = posts_per_month(timestamps)
+    grade   = engagement_grade(er_pct)
+    quality = audience_quality_score(followers, following, er_pct)
+
+    print(f"  Followers: {followers:,} | Following: {following:,} | "
+          f"ER: {er_pct}% | Grade: {grade} | Quality: {quality}/100 | "
+          f"Sentiment: {get_sentiment(texts)}")
+
+    return {
+        "Platform": "Twitter/X", "Year": YEAR,
+        "Followers": followers, "Following": following,
+        "EngagementRate%": er_pct, "AvgEngagementPerPost": avg_eng,
+        "PostsPerMonth": ppm, "FollowerGrade": grade,
+        "AudienceQualityScore": quality,
+        "Sentiment": get_sentiment(texts), "TopPost": top_tweet,
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# YOUTUBE
+# ──────────────────────────────────────────────────────────────
+
+def analyse_youtube() -> dict:
+    print("\n[YouTube] Fetching public channel and video data...")
+
+    if not yt_build:
+        raise ImportError("google-api-python-client not installed.")
+    if not YT_CHANNEL_ID:
+        raise ValueError("YT_CHANNEL_ID is not set — skip YouTube or add a channel ID.")
+
+    youtube = yt_build("youtube", "v3", developerKey=YT_API_KEY)
+
+    ch_resp   = youtube.channels().list(part="statistics", id=YT_CHANNEL_ID).execute()
+    stats     = ch_resp["items"][0]["statistics"]
+    followers = int(stats.get("subscriberCount", 0))
+
+    search_resp = youtube.search().list(
+        part="id,snippet", channelId=YT_CHANNEL_ID,
+        maxResults=20, order="date", type="video"
+    ).execute()
+
+    video_ids  = [i["id"]["videoId"] for i in search_resp.get("items", [])]
+    engagements = []
+    timestamps  = []
+    comments    = []
+    top_video   = ""
+    top_eng     = 0
+
+    if video_ids:
+        vids_resp = youtube.videos().list(
+            part="statistics,snippet",
+            id=",".join(video_ids)
+        ).execute()
+
+        for v in vids_resp.get("items", []):
+            vs  = v["statistics"]
+            eng = int(vs.get("likeCount", 0)) + int(vs.get("commentCount", 0))
+            engagements.append(eng)
+            pub = v["snippet"].get("publishedAt", "")
+            if pub:
+                timestamps.append(datetime.fromisoformat(pub.replace("Z", "+00:00")))
+            if eng > top_eng:
+                top_eng   = eng
+                top_video = v["snippet"].get("title", "")[:120]
+
+        for vid_id in video_ids[:5]:
+            try:
+                c_resp = youtube.commentThreads().list(
+                    part="snippet", videoId=vid_id, maxResults=20
+                ).execute()
+                for c in c_resp.get("items", []):
+                    comments.append(
+                        c["snippet"]["topLevelComment"]["snippet"]["textDisplay"]
+                    )
+            except Exception:
+                pass
+
+    avg_eng = round(sum(engagements) / len(engagements), 1) if engagements else 0
+    er_pct  = round(avg_eng / followers * 100, 2) if followers else 0.0
+    ppm     = posts_per_month(timestamps)
+    grade   = engagement_grade(er_pct)
+    quality = audience_quality_score(followers, 0, er_pct)
+
+    print(f"  Subscribers: {followers:,} | ER: {er_pct}% | Grade: {grade} | "
+          f"Quality: {quality}/100 | Sentiment: {get_sentiment(comments)}")
+
+    return {
+        "Platform": "YouTube", "Year": YEAR,
+        "Followers": followers, "Following": "N/A",
+        "EngagementRate%": er_pct, "AvgEngagementPerPost": avg_eng,
+        "PostsPerMonth": ppm, "FollowerGrade": grade,
+        "AudienceQualityScore": quality,
+        "Sentiment": get_sentiment(comments), "TopPost": top_video,
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# FACEBOOK  (manual — public API requires page admin)
+# ──────────────────────────────────────────────────────────────
+
+def analyse_facebook() -> dict:
+    print("\n[Facebook] No public API without admin access.")
+    print("  Go to GIPF's Facebook Page and enter the numbers you can see.")
+
+    followers = prompt("Facebook", "Page followers / likes")
+    likes     = prompt("Facebook", "Total likes on last 10 posts")
+    comments  = prompt("Facebook", "Total comments on last 10 posts")
+    shares    = prompt("Facebook", "Total shares on last 10 posts")
+
+    total_eng = likes + comments + shares
+    avg_eng   = round(total_eng / 10, 1)
+    er_pct    = round(avg_eng / followers * 100, 2) if followers else 0.0
+    grade     = engagement_grade(er_pct)
+    quality   = audience_quality_score(followers, 0, er_pct)
+
+    print(f"  Followers: {followers:,} | ER: {er_pct}% | Grade: {grade} | Quality: {quality}/100")
+
+    return {
+        "Platform": "Facebook", "Year": YEAR,
+        "Followers": followers, "Following": "N/A",
+        "EngagementRate%": er_pct, "AvgEngagementPerPost": avg_eng,
+        "PostsPerMonth": "N/A", "FollowerGrade": grade,
+        "AudienceQualityScore": quality,
+        "Sentiment": "N/A", "TopPost": "N/A",
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# INSTAGRAM  (manual — public API requires admin)
+# ──────────────────────────────────────────────────────────────
+
+def analyse_instagram() -> dict:
+    print("\n[Instagram] No public API without admin access.")
+    print("  Go to GIPF's Instagram profile and enter the visible numbers.")
+
+    followers = prompt("Instagram", "Followers")
+    following = prompt("Instagram", "Following")
+    likes     = prompt("Instagram", "Total likes on last 10 posts")
+    comments  = prompt("Instagram", "Total comments on last 10 posts")
+
+    total_eng = likes + comments
+    avg_eng   = round(total_eng / 10, 1)
+    er_pct    = round(avg_eng / followers * 100, 2) if followers else 0.0
+    grade     = engagement_grade(er_pct)
+    quality   = audience_quality_score(followers, following, er_pct)
+
+    print(f"  Followers: {followers:,} | ER: {er_pct}% | Grade: {grade} | Quality: {quality}/100")
+
+    return {
+        "Platform": "Instagram", "Year": YEAR,
+        "Followers": followers, "Following": following,
+        "EngagementRate%": er_pct, "AvgEngagementPerPost": avg_eng,
+        "PostsPerMonth": "N/A", "FollowerGrade": grade,
+        "AudienceQualityScore": quality,
+        "Sentiment": "N/A", "TopPost": "N/A",
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# LINKEDIN  (manual — public API requires admin)
+# ──────────────────────────────────────────────────────────────
+
+def analyse_linkedin() -> dict:
+    print("\n[LinkedIn] No public API without admin access.")
+    print("  Go to GIPF's LinkedIn Company Page and enter the visible numbers.")
+
+    followers = prompt("LinkedIn", "Followers")
+    reactions = prompt("LinkedIn", "Total reactions on last 10 posts")
+    comments  = prompt("LinkedIn", "Total comments on last 10 posts")
+
+    total_eng = reactions + comments
+    avg_eng   = round(total_eng / 10, 1)
+    er_pct    = round(avg_eng / followers * 100, 2) if followers else 0.0
+    grade     = engagement_grade(er_pct)
+    quality   = audience_quality_score(followers, 0, er_pct)
+
+    print(f"  Followers: {followers:,} | ER: {er_pct}% | Grade: {grade} | Quality: {quality}/100")
+
+    return {
+        "Platform": "LinkedIn", "Year": YEAR,
+        "Followers": followers, "Following": "N/A",
+        "EngagementRate%": er_pct, "AvgEngagementPerPost": avg_eng,
+        "PostsPerMonth": "N/A", "FollowerGrade": grade,
+        "AudienceQualityScore": quality,
+        "Sentiment": "N/A", "TopPost": "N/A",
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+# MAIN
+# ──────────────────────────────────────────────────────────────
+
+ANALYSERS = [
+    ("Twitter/X",  analyse_twitter),
+    ("YouTube",    analyse_youtube),
+    ("Facebook",   analyse_facebook),
+    ("Instagram",  analyse_instagram),
+    ("LinkedIn",   analyse_linkedin),
+]
+
+
+def main():
+    print("=" * 58)
+    print("  GIPF Social Media Audience Analysis")
+    print(f"  Target: @{TW_USERNAME}  |  Year: {YEAR}")
+    print("=" * 58)
+
+    results = []
+    for platform, fn in ANALYSERS:
+        try:
+            results.append(fn())
+        except Exception as e:
+            print(f"  ! {platform} skipped: {e}")
+            results.append(error_row(platform))
+
+    with open(OUTPUT_FILE, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(results)
+
+    print(f"\nDone. Results saved to: {OUTPUT_FILE}")
+    print()
+    print("Engagement Grade key:")
+    print("  A+ >= 6%  |  A >= 3%  |  B >= 1%  |  C >= 0.5%  |  D < 0.5%")
+    print()
+    print("Audience Quality Score (0-100):")
+    print("  60% — engagement rate (higher = more real, active followers)")
+    print("  40% — follower/following ratio (higher = more organic growth)")
+
+
+if __name__ == "__main__":
+    main()

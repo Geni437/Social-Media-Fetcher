@@ -78,3 +78,53 @@ Output is saved to `SocialMedia_<year>.csv` with the columns:
 
 | Platform | Year | Number of Followers | Number of Engagements | Number of Mentions | Perception |
 |----------|------|--------------------|-----------------------|--------------------|------------|
+
+---
+
+## GIPF Audience Analysis (no admin access required)
+
+A second script — `GIPF_Audience_Analysis` — performs deeper audience analysis for any public social media account (default: `@gipfnamibia`).
+
+```
+python "GIPF_Audience_Analysis"
+```
+
+### Credentials needed (free developer accounts — not account ownership)
+
+| Platform | Credential | Where to get it |
+|---|---|---|
+| Twitter/X | Bearer Token | developer.twitter.com — free tier |
+| YouTube | API Key | console.cloud.google.com — free tier |
+| Facebook / Instagram / LinkedIn | None | Numbers entered manually at runtime |
+
+Open `GIPF_Audience_Analysis` and fill in:
+
+```python
+TW_USERNAME     = "gipfnamibia"       # change to any Twitter handle
+YT_CHANNEL_ID   = "UCxxxxxxxxxxxxxxx" # change to any YouTube channel ID
+
+TW_BEARER_TOKEN = "your_twitter_bearer_token_here"
+YT_API_KEY      = "your_youtube_api_key_here"
+```
+
+For Facebook, Instagram, and LinkedIn the script will prompt you to enter the publicly visible numbers from each profile page at runtime.
+
+### Output columns
+
+| Platform | Year | Followers | Following | EngagementRate% | AvgEngagementPerPost | PostsPerMonth | FollowerGrade | AudienceQualityScore | Sentiment | TopPost |
+|---|---|---|---|---|---|---|---|---|---|---|
+
+### Engagement Grade key
+
+| Grade | Engagement Rate |
+|---|---|
+| A+ | >= 6% |
+| A | >= 3% |
+| B | >= 1% |
+| C | >= 0.5% |
+| D | < 0.5% |
+
+### Audience Quality Score (0–100)
+
+- **60%** engagement rate — higher means more real, active followers
+- **40%** follower/following ratio — higher means more organic growth
