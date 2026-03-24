@@ -7,4 +7,4 @@ __pycache__/
 *.pyo
 
 # Output CSVs (optional — remove these lines if you want to track them)
-# *.csv
+*.csv

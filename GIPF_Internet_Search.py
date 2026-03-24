@@ -31,6 +31,8 @@ import html
 import re
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
+from dotenv import load_dotenv
+load_dotenv()
 
 try:
     from dotenv import load_dotenv
