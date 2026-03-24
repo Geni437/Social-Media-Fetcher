@@ -29,7 +29,14 @@ Requirements:
 """
 
 import csv
+import os
 from datetime import datetime
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed; falls back to environment variables
 
 try:
     import tweepy
@@ -48,16 +55,16 @@ except ImportError:
 
 
 # ──────────────────────────────────────────────────────────────
-# TARGET ACCOUNT — change these to analyse any organisation
+# TARGET ACCOUNT — loaded from .env (or change here directly)
 # ──────────────────────────────────────────────────────────────
-TW_USERNAME   = "gipfnamibia"   # Twitter/X handle without @
-YT_CHANNEL_ID = ""              # YouTube channel ID (UCxxxxxxx) — leave blank if none
+TW_USERNAME   = os.getenv("TW_USERNAME", "gipfnamibia")  # Twitter/X handle without @
+YT_CHANNEL_ID = os.getenv("YT_CHANNEL_ID", "")          # YouTube channel ID (UCxxxxxxx)
 
 # ──────────────────────────────────────────────────────────────
 # CREDENTIALS (free developer keys — NOT the account owner)
 # ──────────────────────────────────────────────────────────────
-TW_BEARER_TOKEN = "your_twitter_bearer_token_here"
-YT_API_KEY      = "your_youtube_api_key_here"
+TW_BEARER_TOKEN = os.getenv("TW_BEARER_TOKEN", "")
+YT_API_KEY      = os.getenv("YT_API_KEY", "")
 
 # ──────────────────────────────────────────────────────────────
 
